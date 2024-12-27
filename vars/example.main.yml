@@ -2,6 +2,7 @@
 # Basic Needed vars
 
 aws_region: us-east-2
+email: changeme@gmail.com
 jfrog_hostname: jfrog
 jfrog_keypair_name: jfrog_keypair
 jfrog_ec2_instance_type: m5.xlarge
