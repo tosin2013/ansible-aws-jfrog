@@ -4,3 +4,5 @@ collections:
   - name: amazon.aws
   - name: ansible.posix
   - name: containers.podman
+  - name: community.postgresql
+  - name: community.crypto
