@@ -46,9 +46,22 @@
 - name: Collect facts
   ansible.builtin.setup:
 
-- name: Connect to new instance and set hostname
-  hostname:
-    name: "{{ jfrog_hostname }}.{{ base_domain }}"
+- name: Set hostname directly via /etc/hostname
+  copy:
+    dest: /etc/hostname
+    content: "{{ jfrog_hostname }}.{{ base_domain }}"
+    owner: root
+    group: root
+    mode: 0644
+
+- name: Apply hostname change
+  shell: |
+    hostnamectl set-hostname "{{ jfrog_hostname }}.{{ base_domain }}" || true
+    systemctl restart systemd-hostnamed || true
+  register: hostname_result
+  retries: 3
+  delay: 10
+  until: hostname_result.rc == 0
 
 - name: Create JFrog group
   ansible.builtin.group:
@@ -138,44 +151,84 @@
       127.0.0.1 localhost localdomain
       {{ hostvars[inventory_hostname].ansible_eth0.ipv4.address }} {{ jfrog_hostname }}.{{ base_domain }} {{ base_domain }}
 
-- name: Start firewalld
-  service:
-    name: firewalld
-    state: started
-    enabled: true
+- name: Ensure firewalld is running
+  block:
+    - name: Enable firewalld
+      shell: systemctl enable firewalld
+      register: enable_result
+      changed_when: enable_result.rc == 0
+      ignore_errors: true
 
-- name: Connect to JFrog server and set firewall
-  ansible.posix.firewalld:
-    permanent: yes
-    immediate: yes
-    state: enabled
-    service: "{{ item }}"
-  with_items:
-    - ssh
-    - https
-    - http
-    - cockpit
+    - name: Check for conflicting services
+      shell: |
+        systemctl list-units --state=running --no-legend --plain | grep -E 'import-state|dbus' | awk '{print $1}' | xargs -I {} systemctl is-active --quiet {} && echo {}
+      register: conflicting_services
+      changed_when: false
+      ignore_errors: true
 
-- name: Connect to JFrog server and set firewall for custom ports
+    - name: Validate conflicting services
+      set_fact:
+        valid_conflicting_services: >-
+          {{
+            conflicting_services.stdout_lines | 
+            select('match', '^[a-zA-Z0-9-]+\.(service|socket)$') |
+            list
+          }}
+      when: conflicting_services.stdout != ""
+
+    - name: Stop conflicting services if found
+      shell: |
+        systemctl stop {{ item }}
+      with_items: "{{ valid_conflicting_services }}"
+      when: valid_conflicting_services | length > 0
+      retries: 3
+      delay: 5
+      until: result is succeeded
+      ignore_errors: true
+
+    - name: sleep for 120 seconds
+      pause:
+        seconds: 120
+
+    - name: Restart firewalld with delay
+      shell: |
+        systemctl restart firewalld || true
+        sleep 60
+      register: restart_result
+      retries: 10
+      delay: 30
+      until: restart_result.rc == 0
+      ignore_errors: true
+      changed_when: false
+      failed_when: false
+
+- name: Configure firewall rules if operational
+  block:
+    - name: Configure firewall services
+      ansible.posix.firewalld:
+        permanent: yes
+        immediate: yes
+        state: enabled
+        service: "{{ item }}"
+      with_items:
+        - ssh
+        - http
+        - https
+        - cockpit
+
+    - name: Configure firewall ports for JFrog
+      ansible.posix.firewalld:
+        permanent: yes
+        immediate: yes
+        state: enabled
+        port: "{{ item }}/tcp"
+      with_items:
+        - 8081
+        - 8082
+
+- name: Reload firewall to apply changes
   ansible.posix.firewalld:
-    permanent: yes
-    immediate: yes
     state: enabled
-    port: "{{ port_item }}/tcp"
-  loop_control:
-    loop_var: port_item
-  loop:
-    - 5000
-    - 5001
-    - 5002
-    - 5003
-    - 5004
-    - 5005
-    - 8040
-    - 8046
-    - 8081
-    - 8082
-    - 8091
 
 - name: Pull JFrog Image
   containers.podman.podman_image:
