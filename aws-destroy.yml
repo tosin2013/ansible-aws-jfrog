@@ -3,6 +3,9 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  environment:
+    AWS_SHARED_CREDENTIALS_FILE: "/home/lab-user/.aws/credentials"
+    
   vars:
     r53_records: []
 
